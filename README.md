@@ -3,6 +3,8 @@
 ## Prereq
 
 Download the coinmetrics directory of addresses as a CSV into your Downloads folder.
+Obtain an API token from infura.io and store it in your .env file
+`INFURA_API_KEY=<something something>`
 
 ## Instructions
 
