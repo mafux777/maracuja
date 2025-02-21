@@ -7,7 +7,7 @@ import { parse } from 'csv-parse/sync';
 dotenv.config();
 
 const MNEMONIC_FILE = path.join(__dirname, '..', 'wallet-secret.txt');
-const RECIPIENTS_FILE = '/Users/funkmeister380/Downloads/CM Team Cryptonomy Directory - Sheet1.csv';
+const RECIPIENTS_FILE = '../Downloads/CM Team Cryptonomy Directory - Sheet1.csv';
 const INFURA_API_KEY = process.env.INFURA_API_KEY;
 const CMCT_ADDRESS = '0x04f9f765c751845ECBeE2Ef52eFb3ca4f9faaF2D';
 
@@ -15,7 +15,9 @@ const CMCT_ADDRESS = '0x04f9f765c751845ECBeE2Ef52eFb3ca4f9faaF2D';
 const ERC20_ABI = [
     'function balanceOf(address owner) view returns (uint256)',
     'function decimals() view returns (uint8)',
-    'function symbol() view returns (string)'
+    'function symbol() view returns (string)',
+    'function transfer(address to, uint256 amount) returns (bool)',
+    'event Transfer(address indexed from, address indexed to, uint256 value)'
 ];
 
 interface Recipient {
@@ -90,28 +92,61 @@ function findRecipientByName(recipients: Recipient[], searchName: string): Recip
     return matches[0];
 }
 
+async function sendInscription(
+    wallet: ethers.HDNodeWallet | ethers.Wallet,
+    recipient: string,
+    message: string
+): Promise<string> {
+    console.log('\nCreating inscription transaction...');
+    
+    const tx = await wallet.sendTransaction({
+        to: recipient,
+        value: 0,  // 0 ETH
+        data: ethers.hexlify(ethers.toUtf8Bytes(`CMCT Payment Note: ${message}`)), // Convert to hex string
+    });
+
+    console.log('Inscription transaction sent, waiting for confirmation...');
+    const receipt = await tx.wait();
+    if (!receipt) {
+        throw new Error('Transaction failed: no receipt received');
+    }
+    return receipt.hash;
+}
+
 async function sendTokens(
     wallet: ethers.HDNodeWallet | ethers.Wallet,
     recipient: Recipient,
-    amount: number
-): Promise<string> {
-    const tokenContract = new ethers.Contract(CMCT_ADDRESS, [
-        ...ERC20_ABI,
-        'function transfer(address to, uint256 amount) returns (bool)'
-    ], wallet);
+    amount: number,
+    reason?: string
+): Promise<{tokenTxHash: string, inscriptionTxHash?: string}> {
+    const tokenContract = new ethers.Contract(CMCT_ADDRESS, ERC20_ABI, wallet);
     
     const decimals = await tokenContract.decimals();
     const symbol = await tokenContract.symbol();
     
-    // Convert amount to token units
     const tokenAmount = ethers.parseUnits(amount.toString(), decimals);
     
     console.log(`\nSending ${amount} ${symbol} to ${recipient.name} (${recipient.address})`);
+    if (reason) {
+        console.log(`Reason: ${reason}`);
+    }
+
+    // First send the inscription if we have a reason
+    let inscriptionTxHash: string | undefined;
+    if (reason) {
+        inscriptionTxHash = await sendInscription(wallet, recipient.address, reason);
+        console.log(`Inscription created: https://sepolia.etherscan.io/tx/${inscriptionTxHash}`);
+    }
+
+    // Then send the tokens
     const tx = await tokenContract.transfer(recipient.address, tokenAmount);
-    console.log('Transaction sent, waiting for confirmation...');
-    
+    console.log('Token transaction sent, waiting for confirmation...');
     const receipt = await tx.wait();
-    return receipt.hash;
+
+    return {
+        tokenTxHash: receipt.hash,
+        inscriptionTxHash
+    };
 }
 
 async function displayBalance(recipient: Recipient, provider: ethers.Provider): Promise<void> {
@@ -192,9 +227,10 @@ async function main() {
         case 'send': {
             const recipientName = process.argv[3];
             const amount = parseFloat(process.argv[4]);
+            const reason = process.argv[5];
 
             if (!recipientName || isNaN(amount)) {
-                console.error('Usage: send <recipient_name> <amount>');
+                console.error('Usage: send <recipient_name> <amount> [reason]');
                 process.exit(1);
             }
 
@@ -207,10 +243,14 @@ async function main() {
             console.log('\nBalance before transfer:');
             await displayBalance(recipient, provider);
             
-            // Send tokens
-            const txHash = await sendTokens(connectedWallet, recipient, amount);
-            console.log(`\nTransaction successful!`);
-            console.log(`View on Etherscan: https://sepolia.etherscan.io/tx/${txHash}`);
+            // Send tokens and create inscription if reason provided
+            const { tokenTxHash, inscriptionTxHash } = await sendTokens(connectedWallet, recipient, amount, reason);
+            
+            console.log('\nTransactions successful!');
+            console.log(`Token Transfer: https://sepolia.etherscan.io/tx/${tokenTxHash}`);
+            if (inscriptionTxHash) {
+                console.log(`Inscription: https://sepolia.etherscan.io/tx/${inscriptionTxHash}`);
+            }
             
             // Display balance after
             console.log('\nBalance after transfer:');
